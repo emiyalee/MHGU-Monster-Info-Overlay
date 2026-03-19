@@ -38,32 +38,50 @@ include $(DEVKITPRO)/libnx/switch_rules
 #   NACP building is skipped as well.
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	MHGU-Monster-Info
-APP_VERSION :=	0.4.0
+APP_VERSION	:=	0.4.1
 
 TARGET		:=	$(notdir $(CURDIR))
 BUILD		:=	build
 SOURCES		:=	source libs/Atmosphere-libs/libstratosphere/source/dmnt
 DATA		:=	data
-INCLUDES	:=	include libs/libtesla/include libs/Atmosphere-libs/libstratosphere/source/dmnt libs/Atmosphere-libs/libstratosphere/source
+INCLUDES	:=	include libs/Atmosphere-libs/libstratosphere/source/dmnt libs/Atmosphere-libs/libstratosphere/source
 
 NO_ICON		:=  1
+
+# This location should reflect where you place the libultrahand directory (lib can vary between projects).
+include ${TOPDIR}/libs/libultrahand/ultrahand.mk
+
 
 #---------------------------------------------------------------------------------
 # options for code generation
 #---------------------------------------------------------------------------------
-ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
+ARCH	:=	-march=armv8-a+simd+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 
-CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
+CFLAGS	:=	-g -Wall -Wno-address-of-packed-member -O3 -ffunction-sections -ffast-math -flto -fomit-frame-pointer \
+            -fuse-linker-plugin -finline-small-functions \
+            -fno-strict-aliasing -frename-registers -falign-functions=16 \
 			$(ARCH) $(DEFINES)
+
+# For compiling Ultrahand Overlay only
+IS_STATUS_MONITOR_DIRECTIVE := 1
+CFLAGS += -DIS_STATUS_MONITOR_DIRECTIVE=$(IS_STATUS_MONITOR_DIRECTIVE)
 
 CFLAGS	+=	$(INCLUDE) -D__SWITCH__ -DAPP_VERSION="\"$(APP_VERSION)\""
 
-CXXFLAGS	:= $(CFLAGS) -fno-exceptions -std=c++17
+CXXFLAGS	:= $(CFLAGS) -std=c++26 -Wno-dangling-else -fno-unwind-tables -fno-asynchronous-unwind-tables
 
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-LIBS	:= -lnx
+LIBS := -lnx
+
+CXXFLAGS += -fno-exceptions -ffunction-sections -fdata-sections -fno-rtti
+LDFLAGS += -Wl,--gc-sections -Wl,--as-needed
+
+
+# For Ensuring Parallel LTRANS Jobs w/ GCC, make -j6
+CXXFLAGS += -flto -fuse-linker-plugin -flto=6
+LDFLAGS += -flto=6
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
@@ -168,12 +186,22 @@ all: $(BUILD)
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+	@rm -rf out/
+	@mkdir -p out/switch/.overlays/
+	@cp $(CURDIR)/$(TARGET).ovl out/switch/.overlays/$(TARGET).ovl
 
 #---------------------------------------------------------------------------------
 clean:
+	@echo "Cleanning ... $(TARGET)"
 	@rm -fr $(BUILD) $(TARGET).ovl $(TARGET).nro $(TARGET).nacp $(TARGET).elf
+	@rm -rf out/
+	@rm -f $(TARGET).zip
 
-
+#---------------------------------------------------------------------------------
+dist: all
+	@echo making dist ...
+	@rm -f $(TARGET).zip
+	@cd out; zip -r ../$(TARGET).zip ./*; cd ../
 #---------------------------------------------------------------------------------
 else
 .PHONY:	all
@@ -188,6 +216,8 @@ all	:	 $(OUTPUT).ovl
 $(OUTPUT).ovl		:	$(OUTPUT).elf $(OUTPUT).nacp 
 	@elf2nro $< $@ $(NROFLAGS)
 	@echo "built ... $(notdir $(OUTPUT).ovl)"
+	@printf 'ULTR' >> $@
+	@printf "Ultrahand signature has been added.\n"
 
 $(OUTPUT).elf	:	$(OFILES)
 
