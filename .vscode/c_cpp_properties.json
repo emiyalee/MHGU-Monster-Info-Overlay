@@ -15,7 +15,8 @@
             "defines": [
                 "SWITCH",
                 "__SWITCH__",
-                "__aarch64__"
+                "__aarch64__",
+                "IS_STATUS_MONITOR_DIRECTIVE"
             ],
             "compilerPath": "C:/msys64/opt/devkitPro/devkitA64/bin/aarch64-none-elf-g++",
             "cStandard": "c11",
