@@ -10,3 +10,7 @@ build/
 *.nacp
 
 *.nro
+
+.qoder
+
+.vscode/ipch
