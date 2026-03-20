@@ -1,0 +1,18 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: true
+AllowShortEnumsOnASingleLine: false
+AccessModifierOffset: -3
+BreakConstructorInitializersBeforeComma: true
+ColumnLimit: 120
+IndentCaseLabels: false
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+PointerAlignment: Left
+QualifierAlignment: Left
+ReferenceAlignment: Left
+#SpacesInAngles:  Always
+BreakTemplateDeclarations: MultiLine
