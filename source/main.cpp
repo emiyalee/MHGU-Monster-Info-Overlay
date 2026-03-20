@@ -19,10 +19,8 @@ uint64_t refresh_interval = 1;
 // MHGU
 u32 MONSTER_POINTER_LIST_OFFSET = 0;
 MonsterPointerList mlist;
-char Monster1_Name[32];
-char Monster2_Name[32];
-char Monster1_Info[32];
-char Monster2_Info[32];
+char Monster1_Name[64];
+char Monster2_Name[64];
 u64 heap_base = 0;
 u64 mlistptr = 0;
 Monster new_m1;
@@ -504,30 +502,23 @@ class InfoOverlay : public tsl::Gui {
         auto frame = new tsl::elm::HeaderOverlayFrame("", "");
 
         auto Status = new tsl::elm::CustomDrawer([](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
-            // renderer->drawRect(0, 420, tsl::cfg::FramebufferWidth - 150, 720, a(0x7111));
             if (mhgu_running) {
                 if (largecount > 1) {
-                    renderer->drawString(Monster1_Name, false, 35, 540, 25, renderer->a(0xFFFF));
-                    renderer->drawString(Monster1_Info, false, 40, 575, 15, renderer->a(0xFFFF));
-                    renderer->drawString(Monster2_Name, false, 35, 620, 25, renderer->a(0xFFFF));
-                    renderer->drawString(Monster2_Info, false, 40, 655, 15, renderer->a(0xFFFF));
+                    renderer->drawString(Monster1_Name, false, 15, 690, 20, renderer->a(0xFFFF));
+                    renderer->drawString(Monster2_Name, false, 15, 710, 20, renderer->a(0xFFFF));
                 } else if (largecount == 1) {
-                    // Check which monster slot is active to display correctly
                     if (m_cache[0].mptr) {
-                        renderer->drawString(Monster1_Name, false, 35, 540, 25, renderer->a(0xFFFF));
-                        renderer->drawString(Monster1_Info, false, 40, 575, 15, renderer->a(0xFFFF));
+                        renderer->drawString(Monster1_Name, false, 15, 710, 20, renderer->a(0xFFFF));
                     } else {
-                        renderer->drawString(Monster2_Name, false, 35, 540, 25, renderer->a(0xFFFF));
-                        renderer->drawString(Monster2_Info, false, 40, 575, 15, renderer->a(0xFFFF));
+                        renderer->drawString(Monster2_Name, false, 15, 710, 20, renderer->a(0xFFFF));
                     }
                 } else {
-                    renderer->drawString(mname_lang ? "    未发现\n\n   大型怪物" : "NO LARGE\n\nMONSTERS", false, 60,
-                                         530, 30, renderer->a(0xFFFF));
+                    renderer->drawString(mname_lang ? "未发现大型怪物" : "NO LARGE MONSTERS", false, 15, 710, 20,
+                                         renderer->a(0xFFFF));
                 }
-
             } else {
-                renderer->drawString(mname_lang ? "       未检测\n\n       到游戏" : "MHGU IS NOT\n\n    RUNNING",
-                                     false, 35, 550, 30, renderer->a(0xFFFF));
+                renderer->drawString(mname_lang ? "未检测到游戏" : "MHGU IS NOT RUNNING", false, 15, 710, 20,
+                                     renderer->a(0xFFFF));
             }
         });
 
@@ -542,13 +533,13 @@ class InfoOverlay : public tsl::Gui {
     virtual void update() override {
         // Use a safe check for max_hp to prevent division by zero
         if (m_cache[0].mptr && m_cache[0].name) {
-            snprintf(Monster1_Name, sizeof Monster1_Name, "%s", m_cache[0].name);
-            snprintf(Monster1_Info, sizeof Monster1_Info, "HP: %d/%d (%.1f%%)", m_cache[0].hp, m_cache[0].max_hp,
+            snprintf(Monster1_Name, sizeof Monster1_Name, "%s HP:%d/%d(%.1f%%)", m_cache[0].name, m_cache[0].hp,
+                     m_cache[0].max_hp,
                      m_cache[0].max_hp > 0 ? (float)m_cache[0].hp / (float)m_cache[0].max_hp * 100.0f : 0.0f);
         }
         if (m_cache[1].mptr && m_cache[1].name) {
-            snprintf(Monster2_Name, sizeof Monster2_Name, "%s", m_cache[1].name);
-            snprintf(Monster2_Info, sizeof Monster2_Info, "HP: %d/%d (%.1f%%)", m_cache[1].hp, m_cache[1].max_hp,
+            snprintf(Monster2_Name, sizeof Monster2_Name, "%s HP:%d/%d(%.1f%%)", m_cache[1].name, m_cache[1].hp,
+                     m_cache[1].max_hp,
                      m_cache[1].max_hp > 0 ? (float)m_cache[1].hp / (float)m_cache[1].max_hp * 100.0f : 0.0f);
         }
     }
