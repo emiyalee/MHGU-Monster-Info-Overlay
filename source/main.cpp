@@ -76,7 +76,7 @@ void setHeapBase() {
 }
 
 // check if there is offset file existing
-void checkListPointer() {
+bool checkListPointer() {
     if (!MONSTER_POINTER_LIST_OFFSET) {
         FILE* MPLoffset = fopen("sdmc:/switch/.overlays/MHGU-Monster-Info-Overlay.hex", "rb");
         if (MPLoffset != NULL) {
@@ -84,6 +84,8 @@ void checkListPointer() {
             fclose(MPLoffset);
         }
     }
+
+    return (MONSTER_POINTER_LIST_OFFSET != 0);
 }
 
 // Add a helper function to validate monster data content ---
@@ -366,11 +368,20 @@ bool isServiceRunning(const char* serviceName) {
 // main loop running in a new thread.
 void getMonsterInfo(void*) {
     initMonsterInfoDB();
-    // Load from file once when the thread starts.
-    checkListPointer();
+
     while (threadexit == false) {
         checkMHGURunning();
         setHeapBase();
+
+        if (!foundpointer) {
+            findListPointer();
+        }
+
+        if (!MONSTER_POINTER_LIST_OFFSET) {
+            svcSleepThread((s64)1'000'000'000 * 3 * refresh_interval);
+            continue;
+        }
+
         // The global offset is now updated directly by findListPointer,
         // so we don't need to constantly check the file anymore in the loop.
         updateMonsterCache();
@@ -402,6 +413,12 @@ void CloseThreads() {
 class FindOverlay : public tsl::Gui {
  public:
     FindOverlay() {
+        checkMHGURunning();
+        setHeapBase();
+
+        foundpointer = 0;
+
+        findListPointer();
     }
 
     // Called when this Gui gets loaded to create the UI
@@ -449,35 +466,59 @@ class FindOverlay : public tsl::Gui {
     }
 };
 
+class MainMenu;
+
 class InfoOverlay : public tsl::Gui {
  public:
     InfoOverlay() {
+        lastMode = "micro";
+
+        tsl::hlp::requestForeground(false);
+
+        TeslaFPS = 1;
+
+        FullMode = false;
+        deactivateOriginalFooter = true;
+
+        refresh_interval = 1;
+
+        tsl::defaultBackgroundColor = tsl::style::color::ColorTransparent;
+
+        StartThreads();
+    }
+
+    virtual ~InfoOverlay() {
+        CloseThreads();
+
+        FullMode = true;
+        deactivateOriginalFooter = false;
+
+        tsl::defaultBackgroundColor = tsl::style::color::ColorFrameBackground;
     }
 
     // Called when this Gui gets loaded to create the UI
     // Allocate all elements on the heap. libtesla will make sure to clean them up when not needed anymore
     virtual tsl::elm::Element* createUI() override {
-        deactivateOriginalFooter = true;
         // A OverlayFrame is the base element every overlay consists of. This will draw the default Title and Subtitle.
         // If you need more information in the header or want to change it's look, use a HeaderOverlayFrame.
         auto frame = new tsl::elm::OverlayFrame("", "");
 
         auto Status = new tsl::elm::CustomDrawer([](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
-            renderer->drawRect(0, 420, tsl::cfg::FramebufferWidth - 150, 720, a(0x7111));
+            // renderer->drawRect(0, 420, tsl::cfg::FramebufferWidth - 150, 720, a(0x7111));
             if (mhgu_running) {
                 if (largecount > 1) {
-                    renderer->drawString(Monster1_Name, false, 35, 475, 30, renderer->a(0xFFFF));
-                    renderer->drawString(Monster1_Info, false, 40, 515, 20, renderer->a(0xFFFF));
-                    renderer->drawString(Monster2_Name, false, 35, 615, 30, renderer->a(0xFFFF));
-                    renderer->drawString(Monster2_Info, false, 40, 655, 20, renderer->a(0xFFFF));
+                    renderer->drawString(Monster1_Name, false, 35, 540, 25, renderer->a(0xFFFF));
+                    renderer->drawString(Monster1_Info, false, 40, 575, 15, renderer->a(0xFFFF));
+                    renderer->drawString(Monster2_Name, false, 35, 620, 25, renderer->a(0xFFFF));
+                    renderer->drawString(Monster2_Info, false, 40, 655, 15, renderer->a(0xFFFF));
                 } else if (largecount == 1) {
                     // Check which monster slot is active to display correctly
                     if (m_cache[0].mptr) {
-                        renderer->drawString(Monster1_Name, false, 35, 475, 30, renderer->a(0xFFFF));
-                        renderer->drawString(Monster1_Info, false, 40, 515, 20, renderer->a(0xFFFF));
+                        renderer->drawString(Monster1_Name, false, 35, 540, 25, renderer->a(0xFFFF));
+                        renderer->drawString(Monster1_Info, false, 40, 575, 15, renderer->a(0xFFFF));
                     } else {
-                        renderer->drawString(Monster2_Name, false, 35, 475, 30, renderer->a(0xFFFF));
-                        renderer->drawString(Monster2_Info, false, 40, 515, 20, renderer->a(0xFFFF));
+                        renderer->drawString(Monster2_Name, false, 35, 540, 25, renderer->a(0xFFFF));
+                        renderer->drawString(Monster2_Info, false, 40, 575, 15, renderer->a(0xFFFF));
                     }
                 } else {
                     renderer->drawString(mname_lang ? "    未发现\n\n   大型怪物" : "NO LARGE\n\nMONSTERS", false, 60,
@@ -516,9 +557,8 @@ class InfoOverlay : public tsl::Gui {
     virtual bool handleInput(u64 keysDown, u64 keysHeld, touchPosition touchInput, JoystickPosition leftJoyStick,
                              JoystickPosition rightJoyStick) override {
         if ((keysHeld & HidNpadButton_StickL) && (keysHeld & HidNpadButton_StickR)) {
-            deactivateOriginalFooter = false;
-            CloseThreads();
-            tsl::goBack();
+            // tsl::goBack();
+            tsl::swapTo<MainMenu>();
             return true;
         }
         return false;
@@ -529,24 +569,18 @@ class InfoOverlay : public tsl::Gui {
 class MainMenu : public tsl::Gui {
  public:
     MainMenu() {
+        lastMode = "";
     }
 
     virtual tsl::elm::Element* createUI() override {
-
         auto rootFrame = new tsl::elm::OverlayFrame("MHGU-Monster-Info", APP_VERSION);
         auto list = new tsl::elm::List();
 
         auto en_info = new tsl::elm::ListItem("Info: English");
         en_info->setClickListener([](uint64_t keys) {
             if (keys & HidNpadButton_A) {
-                StartThreads();
-                TeslaFPS = 1;
-                tsl::defaultBackgroundColor = tsl::style::color::ColorTransparent;
-                tsl::hlp::requestForeground(false);
-                FullMode = false;
-                refresh_interval = 1;
                 mname_lang = 0;
-                tsl::changeTo<InfoOverlay>();
+                tsl::swapTo<InfoOverlay>();
                 return true;
             }
             return false;
@@ -556,14 +590,8 @@ class MainMenu : public tsl::Gui {
         auto zh_info = new tsl::elm::ListItem("Info: 简体中文");
         zh_info->setClickListener([](uint64_t keys) {
             if (keys & HidNpadButton_A) {
-                StartThreads();
-                TeslaFPS = 1;
-                tsl::defaultBackgroundColor = tsl::style::color::ColorTransparent;
-                tsl::hlp::requestForeground(false);
-                FullMode = false;
-                refresh_interval = 1;
                 mname_lang = 1;
-                tsl::changeTo<InfoOverlay>();
+                tsl::swapTo<InfoOverlay>();
                 return true;
             }
             return false;
@@ -579,10 +607,6 @@ class MainMenu : public tsl::Gui {
         auto findp = new tsl::elm::ListItem("Find Pointer");
         findp->setClickListener([](uint64_t keys) {
             if (keys & HidNpadButton_A) {
-                checkMHGURunning();
-                setHeapBase();
-                foundpointer = 0;
-                findListPointer();
                 tsl::changeTo<FindOverlay>();
                 return true;
             }
@@ -608,10 +632,10 @@ class MainMenu : public tsl::Gui {
             FullMode = true;
             tsl::hlp::requestForeground(true);
             TeslaFPS = 60;
-            tsl::defaultBackgroundColor = tsl::style::color::ColorFrameBackground;
             refresh_interval = 1;
         }
     }
+
     virtual bool handleInput(u64 keysDown, u64 keysHeld, touchPosition touchInput, JoystickPosition leftJoyStick,
                              JoystickPosition rightJoyStick) override {
         if (keysDown & HidNpadButton_B) {
