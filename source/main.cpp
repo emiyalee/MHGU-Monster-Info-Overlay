@@ -567,7 +567,7 @@ public:
             if (keys & HidNpadButton_A) {
                 StartThreads();
                 TeslaFPS = 1;
-                alphabackground = 0x0;
+                tsl::defaultBackgroundColor = tsl::style::color::ColorTransparent;
                 tsl::hlp::requestForeground(false);
                 FullMode = false;
                 refresh_interval = 1;
@@ -584,7 +584,7 @@ public:
             if (keys & HidNpadButton_A) {
                 StartThreads();
                 TeslaFPS = 1;
-                alphabackground = 0x0;
+                tsl::defaultBackgroundColor = tsl::style::color::ColorTransparent;
                 tsl::hlp::requestForeground(false);
                 FullMode = false;
                 refresh_interval = 1;
@@ -630,7 +630,7 @@ public:
             FullMode = true;
             tsl::hlp::requestForeground(true);
             TeslaFPS = 60;
-            alphabackground = 0xD;
+            tsl::defaultBackgroundColor = tsl::style::color::ColorFrameBackground;
             refresh_interval = 1;
         }
     }
