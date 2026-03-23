@@ -502,16 +502,75 @@ class InfoOverlay : public tsl::Gui {
         auto frame = new tsl::elm::HeaderOverlayFrame("", "");
 
         auto Status = new tsl::elm::CustomDrawer([](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
+            // Helper lambda: draw a single monster card (name + HP bar)
+            // anchor: (bx, by) = top-left corner of the card
+            // Layout (derived internally):
+            //   name baseline = by + NAME_FONT (20px)
+            //   bar top       = name baseline + NAME_BAR_GAP (3px)
+            //   bar height    = BAR_H (22px)
+            //   bar width     = BAR_W (210px)
+            auto drawMonsterCard = [&](const char* name, s32 hp, s32 max_hp, u16 bx, u16 by) {
+                const u16 NAME_FONT    = 20;
+                const u16 NAME_BAR_GAP = 3;
+                const u16 BAR_W        = 210;
+                const u16 BAR_H        = 22;
+                const u16 TEXT_FONT    = 14;
+
+                const u16 name_y = by + NAME_FONT;               // drawString baseline
+                const u16 bar_y  = name_y + NAME_BAR_GAP;        // bar top
+                const u16 text_y = bar_y + BAR_H - 5;            // text baseline inside bar
+
+                // Draw monster name
+                renderer->drawString(name, false, bx, name_y, NAME_FONT, renderer->a(0xFFFF));
+
+                // Draw bar background (dark semi-transparent)
+                renderer->drawRect(bx, bar_y, BAR_W, BAR_H, renderer->a({0x2, 0x2, 0x2, 0xC0}));
+
+                // Draw HP fill
+                if (max_hp > 0) {
+                    float ratio = (float)hp / (float)max_hp;
+                    if (ratio < 0.0f) ratio = 0.0f;
+                    if (ratio > 1.0f) ratio = 1.0f;
+                    u16 fill_w = (u16)(BAR_W * ratio);
+                    tsl::Color fill_color;
+                    if (ratio > 0.5f)
+                        fill_color = renderer->a({0x0, 0xC0, 0x0, 0xFF}); // green
+                    else if (ratio > 0.25f)
+                        fill_color = renderer->a({0xC0, 0xC0, 0x0, 0xFF}); // yellow
+                    else
+                        fill_color = renderer->a({0xC0, 0x0, 0x0, 0xFF}); // red
+                    if (fill_w > 0) renderer->drawRect(bx, bar_y, fill_w, BAR_H, fill_color);
+                }
+
+                // Draw bar border (white outline)
+                renderer->drawRect(bx,             bar_y,             BAR_W, 1,     renderer->a(0xFFFF)); // top
+                renderer->drawRect(bx,             bar_y + BAR_H - 1, BAR_W, 1,     renderer->a(0xFFFF)); // bottom
+                renderer->drawRect(bx,             bar_y,             1,     BAR_H, renderer->a(0xFFFF)); // left
+                renderer->drawRect(bx + BAR_W - 1, bar_y,             1,     BAR_H, renderer->a(0xFFFF)); // right
+
+                // Left: HP:current/max
+                char hp_text[32];
+                snprintf(hp_text, sizeof(hp_text), "HP:%d/%d", hp, max_hp);
+                renderer->drawString(hp_text, false, bx + 3, text_y, TEXT_FONT, renderer->a(0xFFFF));
+
+                // Right: percentage (right-aligned)
+                char pct_text[16];
+                float pct = (max_hp > 0) ? ((float)hp / (float)max_hp * 100.0f) : 0.0f;
+                snprintf(pct_text, sizeof(pct_text), "%.1f%%", pct);
+                u16 pct_w = renderer->drawString(pct_text, false, 0, 0, TEXT_FONT, {0, 0, 0, 0}).first;
+                renderer->drawString(pct_text, false, bx + BAR_W - pct_w - 3, text_y, TEXT_FONT, renderer->a(0xFFFF));
+            };
+
             if (mhgu_running) {
+                // Card anchor: top-left corner (bx, by)
+                // name baseline = by+20, bar top = by+23, total card height ~45px
+                const u16 CARD_Y = 665; // anchor y: name top, bar bottom lands at y=700 (near screen bottom)
                 if (largecount > 1) {
-                    renderer->drawString(Monster1_Name, false, 15, 690, 20, renderer->a(0xFFFF));
-                    renderer->drawString(Monster2_Name, false, 15, 710, 20, renderer->a(0xFFFF));
+                    drawMonsterCard(m_cache[0].name ? m_cache[0].name : "?", m_cache[0].hp, m_cache[0].max_hp, 15, CARD_Y);
+                    drawMonsterCard(m_cache[1].name ? m_cache[1].name : "?", m_cache[1].hp, m_cache[1].max_hp, 235, CARD_Y);
                 } else if (largecount == 1) {
-                    if (m_cache[0].mptr) {
-                        renderer->drawString(Monster1_Name, false, 15, 710, 20, renderer->a(0xFFFF));
-                    } else {
-                        renderer->drawString(Monster2_Name, false, 15, 710, 20, renderer->a(0xFFFF));
-                    }
+                    MonsterCache* mc = m_cache[0].mptr ? &m_cache[0] : &m_cache[1];
+                    drawMonsterCard(mc->name ? mc->name : "?", mc->hp, mc->max_hp, 15, CARD_Y);
                 } else {
                     renderer->drawString(mname_lang ? "未发现大型怪物" : "NO LARGE MONSTERS", false, 15, 710, 20,
                                          renderer->a(0xFFFF));
@@ -531,17 +590,8 @@ class InfoOverlay : public tsl::Gui {
 
     // Called once every frame to update values
     virtual void update() override {
-        // Use a safe check for max_hp to prevent division by zero
-        if (m_cache[0].mptr && m_cache[0].name) {
-            snprintf(Monster1_Name, sizeof Monster1_Name, "%s HP:%d/%d(%.1f%%)", m_cache[0].name, m_cache[0].hp,
-                     m_cache[0].max_hp,
-                     m_cache[0].max_hp > 0 ? (float)m_cache[0].hp / (float)m_cache[0].max_hp * 100.0f : 0.0f);
-        }
-        if (m_cache[1].mptr && m_cache[1].name) {
-            snprintf(Monster2_Name, sizeof Monster2_Name, "%s HP:%d/%d(%.1f%%)", m_cache[1].name, m_cache[1].hp,
-                     m_cache[1].max_hp,
-                     m_cache[1].max_hp > 0 ? (float)m_cache[1].hp / (float)m_cache[1].max_hp * 100.0f : 0.0f);
-        }
+        // Monster names are now read directly from m_cache in the draw lambda;
+        // Monster1_Name / Monster2_Name are no longer used for the info overlay display.
     }
 
     // Called once every frame to handle inputs not handled by other UI elements
