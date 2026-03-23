@@ -22,7 +22,7 @@ Todo
 1. Enter the info(English or Chinese)
 
 # Requirements:
-- Switch Version >= 21.20 
+- Switch Version >= 21.2.0 
 - Atmosphere >= 1.10.2 (SXOS is not supported due to dmnt:cht)
 - UltraHand
 - MHGU ver 1.4.0
