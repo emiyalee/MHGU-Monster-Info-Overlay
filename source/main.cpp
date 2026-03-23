@@ -548,7 +548,7 @@ class InfoOverlay : public tsl::Gui {
 
         // Left: HP:current/max
         char hp_text[32];
-        snprintf(hp_text, sizeof(hp_text), "HP:%d/%d", hp, max_hp);
+        snprintf(hp_text, sizeof(hp_text), "%d/%d", hp, max_hp);
         renderer->drawString(hp_text, false, bx + 3, text_y, kTextFont, renderer->a(0xFFFF));
 
         // Right: percentage (right-aligned)
