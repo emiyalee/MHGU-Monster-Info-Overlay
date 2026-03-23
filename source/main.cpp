@@ -18,81 +18,84 @@
 #define SEARCH_END_OFFSET 0x10F00000
 
 // Common
-Thread t0;
-std::atomic<bool> threadexit{false};
-uint64_t refresh_interval = 1;
+Thread g_thread;
+std::atomic<bool> g_thread_exit{false};
+uint64_t g_refresh_interval = 1;
 std::mutex g_cache_mutex;
 
 // MHGU
-u32 MONSTER_POINTER_LIST_OFFSET = 0;
-MonsterPointerList mlist;
-u64 heap_base = 0;
-u64 mlistptr = 0;
-Monster new_m1;
-Monster new_m2;
-Monster m;
-u8 largecount = 0;
-std::atomic<u8> foundpointer{0};
+u32 g_monster_list_offset = 0;
+MonsterPointerList g_monster_list;
+u64 g_heap_base = 0;
+u64 g_monster_list_ptr = 0;
+Monster g_temp_monster;
+Monster g_new_monster1;
+Monster g_new_monster2;
+u8 g_large_count = 0;
+std::atomic<u8> g_found_pointer{0};
 
 //  Chinese 1, English 0
-u8 mname_lang = 1;
+u8 g_name_lang = 1;
 
-std::atomic<u8> mhgu_running{0};
+std::atomic<u8> g_game_running{0};
 
-bool Atmosphere_present = false;
+bool g_atmosphere_present = false;
+
+// static vars
+MonsterCache m_cache[2]; // assume only 2 big monsters are active at a time
 
 // check if mhgu game is running
-void checkMHGURunning() {
+void CheckMhguRunning() {
     u64 pid;
     u64 title_id;
     Result rc;
     rc = pmdmntGetApplicationProcessId(&pid);
     if (R_FAILED(rc)) {
-        mhgu_running = 0;
+        g_game_running = 0;
         return;
     }
     rc = pminfoGetProgramId(&title_id, pid);
     if (R_FAILED(rc)) {
-        mhgu_running = 0;
+        g_game_running = 0;
         return;
     }
     if (title_id == MHGU_TITLE_ID) {
-        mhgu_running = 1;
+        g_game_running = 1;
     } else {
-        mhgu_running = 0;
+        g_game_running = 0;
     }
 }
 
 // get heap start address
-void setHeapBase() {
-    if (mhgu_running) {
+void SetHeapBase() {
+    if (g_game_running) {
         bool out = false;
         dmntchtHasCheatProcess(&out);
         if (out == false) dmntchtForceOpenCheatProcess();
-        DmntCheatProcessMetadata mhguProcessMetaData;
-        dmntchtGetCheatProcessMetadata(&mhguProcessMetaData);
-        heap_base = mhguProcessMetaData.heap_extents.base;
+        DmntCheatProcessMetadata process_metadata;
+        dmntchtGetCheatProcessMetadata(&process_metadata);
+        g_heap_base = process_metadata.heap_extents.base;
     } else {
-        heap_base = 0;
+        g_heap_base = 0;
     }
 }
 
 // check if there is offset file existing
-bool checkListPointer() {
-    if (!MONSTER_POINTER_LIST_OFFSET) {
-        FILE* MPLoffset = fopen("sdmc:/switch/.overlays/MHGU-Monster-Info-Overlay.hex", "rb");
-        if (MPLoffset != NULL) {
-            fread(&MONSTER_POINTER_LIST_OFFSET, 0x4, 1, MPLoffset);
-            fclose(MPLoffset);
+bool CheckListPointer() {
+    if (!g_monster_list_offset) {
+        FILE* offset_file = fopen("sdmc:/switch/.overlays/MHGU-Monster-Info-Overlay.hex", "rb");
+        if (offset_file != NULL) {
+            fread(&g_monster_list_offset, 0x4, 1, offset_file);
+            fclose(offset_file);
         }
     }
 
-    return (MONSTER_POINTER_LIST_OFFSET != 0);
+    return (g_monster_list_offset != 0);
 }
 
 // Add a helper function to validate monster data content ---
 // This helps filter out "false positives" by checking if the data makes logical sense.
-bool isMonsterDataSane(Monster* monster_data) {
+bool IsMonsterDataSane(Monster* monster_data) {
     // A real monster's Max HP should be within a reasonable range.
     if (monster_data->max_hp <= 100 || monster_data->max_hp > 999999) return false;
     // Current HP cannot be greater than Max HP.
@@ -101,16 +104,16 @@ bool isMonsterDataSane(Monster* monster_data) {
 }
 
 // find monster list pointer
-void findListPointer() {
-    if (!mhgu_running || !heap_base) {
-        MONSTER_POINTER_LIST_OFFSET = 0;
+void FindListPointer() {
+    if (!g_game_running || !g_heap_base) {
+        g_monster_list_offset = 0;
         return;
     }
 
     // Implement chunked scanning to prevent crashes from large memory allocation ---
     // Instead of allocating a huge buffer, we scan memory in smaller, safer chunks.
-    const u32 CHUNK_SIZE = 65536; // 64KB is a safe and efficient size
-    u8* buffer = (u8*)malloc(CHUNK_SIZE);
+    const u32 kChunkSize = 65536; // 64KB is a safe and efficient size
+    u8* buffer = (u8*)malloc(kChunkSize);
     if (!buffer) {
         return; // malloc failed
     }
@@ -119,12 +122,12 @@ void findListPointer() {
 
     // We overlap reads by sizeof(MonsterPointerList) to not miss patterns that cross chunk boundaries
     for (u32 chunk_base_offset = 0; chunk_base_offset < total_search_size;
-         chunk_base_offset += (CHUNK_SIZE - sizeof(MonsterPointerList))) {
-        u64 read_addr = heap_base + SEARCH_START_OFFSET + chunk_base_offset;
-        dmntchtReadCheatProcessMemory(read_addr, buffer, CHUNK_SIZE);
+         chunk_base_offset += (kChunkSize - sizeof(MonsterPointerList))) {
+        u64 read_addr = g_heap_base + SEARCH_START_OFFSET + chunk_base_offset;
+        dmntchtReadCheatProcessMemory(read_addr, buffer, kChunkSize);
 
         u32 offset_in_chunk = 0;
-        u32 loopend = CHUNK_SIZE - sizeof(MonsterPointerList);
+        u32 loopend = kChunkSize - sizeof(MonsterPointerList);
 
         while (offset_in_chunk < loopend) {
             MonsterPointerList* l = (MonsterPointerList*)(buffer + offset_in_chunk);
@@ -187,10 +190,9 @@ void findListPointer() {
             }
 
             // Validate the content of the found structure ---
-            Monster temp_monster;
-            Result rc = dmntchtReadCheatProcessMemory(l->m[0], &temp_monster, sizeof(Monster));
+            Result rc = dmntchtReadCheatProcessMemory(l->m[0], &g_temp_monster, sizeof(Monster));
 
-            if (R_FAILED(rc) || !isMonsterDataSane(&temp_monster)) {
+            if (R_FAILED(rc) || !IsMonsterDataSane(&g_temp_monster)) {
                 // If reading fails or the data is illogical, this is a false positive. Skip it.
                 offset_in_chunk += 24;
                 continue;
@@ -202,35 +204,36 @@ void findListPointer() {
 
             // Ensure data synchronization ---
             // Immediately update the in-memory global variable so the display thread can use it.
-            MONSTER_POINTER_LIST_OFFSET = found_offset;
+            g_monster_list_offset = found_offset;
 
-            FILE* MPLoffset = fopen("sdmc:/switch/.overlays/MHGU-Monster-Info-Overlay.hex", "wb");
-            if (MPLoffset) { // Check if file opened successfully
-                fwrite(&found_offset, 0x4, 1, MPLoffset);
-                fclose(MPLoffset);
+            FILE* offset_file = fopen("sdmc:/switch/.overlays/MHGU-Monster-Info-Overlay.hex", "wb");
+            if (offset_file) { // Check if file opened successfully
+                fwrite(&found_offset, 0x4, 1, offset_file);
+                fclose(offset_file);
             }
 
-            // The original code set MONSTER_POINTER_LIST_OFFSET to 0 here, which was a bug.
+            // The original code set g_monster_list_offset to 0 here, which was a bug.
             // We now keep the found value in memory for the display thread to use.
-            foundpointer = 1;
+            g_found_pointer = 1;
             return;
         }
     }
 
     free(buffer);
-    MONSTER_POINTER_LIST_OFFSET = 0;
+    g_monster_list_offset = 0;
     return;
 }
 
 // update monster info
-void updateMonsterCache() {
+void UpdateMonsterCache() {
     std::lock_guard<std::mutex> lock(g_cache_mutex);
-    if (!mhgu_running || !heap_base || !MONSTER_POINTER_LIST_OFFSET) {
-        largecount = 0; // Reset count if prerequisites are not met
+    if (!g_game_running || !g_heap_base || !g_monster_list_offset) {
+        g_large_count = 0; // Reset count if prerequisites are not met
         return;
     }
-    mlistptr = heap_base + MONSTER_POINTER_LIST_OFFSET;
-    dmntchtReadCheatProcessMemory(mlistptr, &mlist, sizeof mlist);
+
+    g_monster_list_ptr = g_heap_base + g_monster_list_offset;
+    dmntchtReadCheatProcessMemory(g_monster_list_ptr, &g_monster_list, sizeof g_monster_list);
     u32 new_m1_ptr = 0;
     u32 new_m2_ptr = 0;
     u8 keep_m1 = 0;
@@ -240,40 +243,40 @@ void updateMonsterCache() {
     MonsterInfo* new_m2_info = NULL;
     // check all monsters, excluding small ones
     for (u8 i = 0; i < MAX_POINTERS_IN_LIST; i++) {
-        if (!mlist.m[i]) continue;
-        dmntchtReadCheatProcessMemory(mlist.m[i], &m, sizeof m);
-        if (isSmallMonster(&m)) continue;
+        if (!g_monster_list.m[i]) continue;
+        dmntchtReadCheatProcessMemory(g_monster_list.m[i], &g_temp_monster, sizeof g_temp_monster);
+        if (isSmallMonster(&g_temp_monster)) continue;
 
         count += 1;
-        MonsterInfo* m_info = getMonsterInfoFromDB(&m);
-        if (mlist.m[i] == m_cache[0].mptr) {
+        MonsterInfo* m_info = getMonsterInfoFromDB(&g_temp_monster);
+        if (g_monster_list.m[i] == m_cache[0].mptr) {
             keep_m1 = 1;
-            m_cache[0].hp = m.hp;
-            m_cache[0].max_hp = m.max_hp;
-            m_cache[0].name = mname_lang ? m_info->cn_name : m_info->name;
+            m_cache[0].hp = g_temp_monster.hp;
+            m_cache[0].max_hp = g_temp_monster.max_hp;
+            m_cache[0].name = g_name_lang ? m_info->cn_name : m_info->name;
 
-            for (u8 i = 0; i < 8; i++) {
-                m_cache[0].p[i].max_stagger_hp = m.parts[i].stagger_hp;
-                m_cache[0].p[i].max_break_hp = m.parts[i].break_hp;
+            for (u8 j = 0; j < 8; j++) {
+                m_cache[0].p[j].max_stagger_hp = g_temp_monster.parts[j].stagger_hp;
+                m_cache[0].p[j].max_break_hp = g_temp_monster.parts[j].break_hp;
             }
-        } else if (mlist.m[i] == m_cache[1].mptr) {
+        } else if (g_monster_list.m[i] == m_cache[1].mptr) {
             keep_m2 = 1;
-            m_cache[1].hp = m.hp;
-            m_cache[1].max_hp = m.max_hp;
-            m_cache[1].name = mname_lang ? m_info->cn_name : m_info->name;
+            m_cache[1].hp = g_temp_monster.hp;
+            m_cache[1].max_hp = g_temp_monster.max_hp;
+            m_cache[1].name = g_name_lang ? m_info->cn_name : m_info->name;
 
-            for (u8 i = 0; i < 8; i++) {
-                m_cache[1].p[i].max_stagger_hp = m.parts[i].stagger_hp;
-                m_cache[1].p[i].max_break_hp = m.parts[i].break_hp;
+            for (u8 j = 0; j < 8; j++) {
+                m_cache[1].p[j].max_stagger_hp = g_temp_monster.parts[j].stagger_hp;
+                m_cache[1].p[j].max_break_hp = g_temp_monster.parts[j].break_hp;
             }
         } else if (new_m1_ptr == 0) {
             // save new monster pointer so we can add parts info later
-            new_m1 = m;
-            new_m1_ptr = mlist.m[i];
+            g_new_monster1 = g_temp_monster;
+            new_m1_ptr = g_monster_list.m[i];
             new_m1_info = m_info;
         } else if (new_m2_ptr == 0) {
-            new_m2 = m;
-            new_m2_ptr = mlist.m[i];
+            g_new_monster2 = g_temp_monster;
+            new_m2_ptr = g_monster_list.m[i];
             new_m2_info = m_info;
         }
     }
@@ -284,9 +287,9 @@ void updateMonsterCache() {
         m_cache[0].hp = 0;
         m_cache[0].max_hp = 0;
         m_cache[0].name = NULL;
-        for (u8 i = 0; i < 8; i++) {
-            m_cache[0].p[i].max_stagger_hp = 0;
-            m_cache[0].p[i].max_break_hp = 0;
+        for (u8 j = 0; j < 8; j++) {
+            m_cache[0].p[j].max_stagger_hp = 0;
+            m_cache[0].p[j].max_break_hp = 0;
         }
     }
     if (!keep_m2) {
@@ -294,134 +297,134 @@ void updateMonsterCache() {
         m_cache[1].hp = 0;
         m_cache[1].max_hp = 0;
         m_cache[1].name = NULL;
-        for (u8 i = 0; i < 8; i++) {
-            m_cache[1].p[i].max_stagger_hp = 0;
-            m_cache[1].p[i].max_break_hp = 0;
+        for (u8 j = 0; j < 8; j++) {
+            m_cache[1].p[j].max_stagger_hp = 0;
+            m_cache[1].p[j].max_break_hp = 0;
         }
     }
 
     // add new monster stats
-    // note: assume new_m2 will never be assigned before new_m1
+    // note: assume g_new_monster2 will never be assigned before g_new_monster1
     // note: only display parts that have more than 2 break_hp; for non-breakable parts it is typically negative but it
     // can be fixed to 1 if there are special critereas involved
     if (new_m1_ptr) {
         if (!m_cache[0].mptr) {
             m_cache[0].mptr = new_m1_ptr;
-            m_cache[0].hp = new_m1.hp;
-            m_cache[0].max_hp = new_m1.max_hp;
-            m_cache[0].name = mname_lang ? new_m1_info->cn_name : new_m1_info->name;
+            m_cache[0].hp = g_new_monster1.hp;
+            m_cache[0].max_hp = g_new_monster1.max_hp;
+            m_cache[0].name = g_name_lang ? new_m1_info->cn_name : new_m1_info->name;
 
-            for (u8 i = 0; i < 8; i++) {
-                m_cache[0].p[i].max_stagger_hp = new_m1.parts[i].stagger_hp;
-                m_cache[0].p[i].max_break_hp = new_m1.parts[i].break_hp;
+            for (u8 j = 0; j < 8; j++) {
+                m_cache[0].p[j].max_stagger_hp = g_new_monster1.parts[j].stagger_hp;
+                m_cache[0].p[j].max_break_hp = g_new_monster1.parts[j].break_hp;
             }
         } else {
             m_cache[1].mptr = new_m1_ptr;
-            m_cache[1].hp = new_m1.hp;
-            m_cache[1].max_hp = new_m1.max_hp;
-            m_cache[1].name = mname_lang ? new_m1_info->cn_name : new_m1_info->name;
+            m_cache[1].hp = g_new_monster1.hp;
+            m_cache[1].max_hp = g_new_monster1.max_hp;
+            m_cache[1].name = g_name_lang ? new_m1_info->cn_name : new_m1_info->name;
 
-            for (u8 i = 0; i < 8; i++) {
-                m_cache[1].p[i].max_stagger_hp = new_m1.parts[i].stagger_hp;
-                m_cache[1].p[i].max_break_hp = new_m1.parts[i].break_hp;
+            for (u8 j = 0; j < 8; j++) {
+                m_cache[1].p[j].max_stagger_hp = g_new_monster1.parts[j].stagger_hp;
+                m_cache[1].p[j].max_break_hp = g_new_monster1.parts[j].break_hp;
             }
         }
     }
     if (new_m2_ptr) {
         if (!m_cache[0].mptr) {
             m_cache[0].mptr = new_m2_ptr;
-            m_cache[0].hp = new_m2.hp;
-            m_cache[0].max_hp = new_m2.max_hp;
-            m_cache[0].name = mname_lang ? new_m2_info->cn_name : new_m2_info->name;
+            m_cache[0].hp = g_new_monster2.hp;
+            m_cache[0].max_hp = g_new_monster2.max_hp;
+            m_cache[0].name = g_name_lang ? new_m2_info->cn_name : new_m2_info->name;
 
-            for (u8 i = 0; i < 8; i++) {
-                m_cache[0].p[i].max_stagger_hp = new_m2.parts[i].stagger_hp;
-                m_cache[0].p[i].max_break_hp = new_m2.parts[i].break_hp;
+            for (u8 j = 0; j < 8; j++) {
+                m_cache[0].p[j].max_stagger_hp = g_new_monster2.parts[j].stagger_hp;
+                m_cache[0].p[j].max_break_hp = g_new_monster2.parts[j].break_hp;
             }
         } else {
             m_cache[1].mptr = new_m2_ptr;
-            m_cache[1].hp = new_m2.hp;
-            m_cache[1].max_hp = new_m2.max_hp;
-            m_cache[1].name = mname_lang ? new_m2_info->cn_name : new_m2_info->name;
+            m_cache[1].hp = g_new_monster2.hp;
+            m_cache[1].max_hp = g_new_monster2.max_hp;
+            m_cache[1].name = g_name_lang ? new_m2_info->cn_name : new_m2_info->name;
 
-            for (u8 i = 0; i < 8; i++) {
-                m_cache[1].p[i].max_stagger_hp = new_m2.parts[i].stagger_hp;
-                m_cache[1].p[i].max_break_hp = new_m2.parts[i].break_hp;
+            for (u8 j = 0; j < 8; j++) {
+                m_cache[1].p[j].max_stagger_hp = g_new_monster2.parts[j].stagger_hp;
+                m_cache[1].p[j].max_break_hp = g_new_monster2.parts[j].break_hp;
             }
         }
     }
 
     // update large monster count
-    largecount = count;
+    g_large_count = count;
 }
 
 // check if service is already registered
-bool isServiceRunning(const char* serviceName) {
+bool IsServiceRunning(const char* service_name) {
     Handle handle;
-    SmServiceName service_name = smEncodeName(serviceName);
-    if (R_FAILED(smRegisterService(&handle, service_name, false, 1)))
+    SmServiceName sm_service_name = smEncodeName(service_name);
+    if (R_FAILED(smRegisterService(&handle, sm_service_name, false, 1)))
         return true;
     else {
         svcCloseHandle(handle);
-        smUnregisterService(service_name);
+        smUnregisterService(sm_service_name);
         return false;
     }
 }
 
 // main loop running in a new thread.
-void getMonsterInfo(void*) {
+void GetMonsterInfo(void*) {
     initMonsterInfoDB();
 
-    while (threadexit == false) {
-        checkMHGURunning();
-        setHeapBase();
+    while (g_thread_exit == false) {
+        CheckMhguRunning();
+        SetHeapBase();
 
-        if (!foundpointer) {
-            findListPointer();
+        if (!g_found_pointer) {
+            FindListPointer();
         }
 
-        if (!MONSTER_POINTER_LIST_OFFSET) {
-            svcSleepThread((s64)1'000'000'000 * 3 * refresh_interval);
+        if (!g_monster_list_offset) {
+            svcSleepThread((s64)1'000'000'000 * 3 * g_refresh_interval);
             continue;
         }
 
-        // The global offset is now updated directly by findListPointer,
+        // The global offset is now updated directly by FindListPointer,
         // so we don't need to constantly check the file anymore in the loop.
-        updateMonsterCache();
+        UpdateMonsterCache();
         // interval
-        svcSleepThread(1'000'000'000 * refresh_interval);
+        svcSleepThread(1'000'000'000 * g_refresh_interval);
     }
 }
 
 // Start
 void StartThreads() {
     // A simple check to prevent creating multiple threads
-    if (t0.handle == 0) {
-        threadCreate(&t0, getMonsterInfo, NULL, NULL, 0x10000, 0x3F, -2);
-        threadStart(&t0);
+    if (g_thread.handle == 0) {
+        threadCreate(&g_thread, GetMonsterInfo, NULL, NULL, 0x10000, 0x3F, -2);
+        threadStart(&g_thread);
     }
 }
 
 // End
 void CloseThreads() {
-    if (t0.handle != 0) {
-        threadexit = true;
-        threadWaitForExit(&t0);
-        threadClose(&t0);
-        t0.handle = 0; // Reset handle for potential restart
-        threadexit = false;
+    if (g_thread.handle != 0) {
+        g_thread_exit = true;
+        threadWaitForExit(&g_thread);
+        threadClose(&g_thread);
+        g_thread.handle = 0; // Reset handle for potential restart
+        g_thread_exit = false;
     }
 }
 
 class FindOverlay : public tsl::Gui {
  public:
     FindOverlay() {
-        checkMHGURunning();
-        setHeapBase();
+        CheckMhguRunning();
+        SetHeapBase();
 
-        foundpointer = 0;
+        g_found_pointer = 0;
 
-        findListPointer();
+        FindListPointer();
     }
 
     // Called when this Gui gets loaded to create the UI
@@ -431,8 +434,8 @@ class FindOverlay : public tsl::Gui {
         // If you need more information in the header or want to change it's look, use a HeaderOverlayFrame.
         auto frame = new tsl::elm::OverlayFrame("MHGU-Monster-Info", APP_VERSION);
 
-        auto Status = new tsl::elm::CustomDrawer([](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
-            if (!foundpointer) {
+        auto status = new tsl::elm::CustomDrawer([](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
+            if (!g_found_pointer) {
                 renderer->drawString("\uE150 ERROR", false, 130, 260, 30, renderer->a(0xFFFF));
                 renderer->drawString("Advice:", false, 40, 320, 20, renderer->a(0xFFFF));
                 renderer->drawString(
@@ -448,7 +451,7 @@ class FindOverlay : public tsl::Gui {
         });
 
         // Add the list to the frame for it to be drawn
-        frame->setContent(Status);
+        frame->setContent(status);
 
         // Return the frame to have it become the top level element of this Gui
         return frame;
@@ -473,7 +476,7 @@ class MainMenu;
 
 class InfoOverlay : public tsl::Gui {
     MonsterCache cache_[2]{};
-    u8 largecount_ = 0;
+    u8 large_count_ = 0;
 
  public:
     InfoOverlay() {
@@ -486,7 +489,7 @@ class InfoOverlay : public tsl::Gui {
         FullMode = false;
         deactivateOriginalFooter = true;
 
-        refresh_interval = 1;
+        g_refresh_interval = 1;
 
         tsl::defaultBackgroundColor = tsl::style::color::ColorTransparent;
 
@@ -504,29 +507,29 @@ class InfoOverlay : public tsl::Gui {
 
     // Draw a single monster card (name + HP bar)
     // anchor: (bx, by) = top-left corner of the card
-    static void drawMonsterCard(tsl::gfx::Renderer* renderer, const char* name, s32 hp, s32 max_hp, u16 bx, u16 by) {
-        const u16 NAME_FONT = 20;
-        const u16 NAME_BAR_GAP = 3;
-        const u16 BAR_W = 210;
-        const u16 BAR_H = 22;
-        const u16 TEXT_FONT = 14;
+    static void DrawMonsterCard(tsl::gfx::Renderer* renderer, const char* name, s32 hp, s32 max_hp, u16 bx, u16 by) {
+        const u16 kNameFont = 20;
+        const u16 kNameBarGap = 3;
+        const u16 kBarW = 210;
+        const u16 kBarH = 22;
+        const u16 kTextFont = 14;
 
-        const u16 name_y = by + NAME_FONT;       // drawString baseline
-        const u16 bar_y = name_y + NAME_BAR_GAP; // bar top
-        const u16 text_y = bar_y + BAR_H - 5;    // text baseline inside bar
+        const u16 name_y = by + kNameFont;      // drawString baseline
+        const u16 bar_y = name_y + kNameBarGap; // bar top
+        const u16 text_y = bar_y + kBarH - 5;   // text baseline inside bar
 
         // Draw monster name
-        renderer->drawString(name, false, bx, name_y, NAME_FONT, renderer->a(0xFFFF));
+        renderer->drawString(name, false, bx, name_y, kNameFont, renderer->a(0xFFFF));
 
         // Draw bar background (dark semi-transparent)
-        renderer->drawRect(bx, bar_y, BAR_W, BAR_H, renderer->a({0x2, 0x2, 0x2, 0xC0}));
+        renderer->drawRect(bx, bar_y, kBarW, kBarH, renderer->a({0x2, 0x2, 0x2, 0xC0}));
 
         // Draw HP fill
         if (max_hp > 0) {
             float ratio = (float)hp / (float)max_hp;
             if (ratio < 0.0f) ratio = 0.0f;
             if (ratio > 1.0f) ratio = 1.0f;
-            u16 fill_w = (u16)(BAR_W * ratio);
+            u16 fill_w = (u16)(kBarW * ratio);
             tsl::Color fill_color;
             if (ratio > 0.5f)
                 fill_color = renderer->a({0x0, 0xC0, 0x0, 0xFF}); // green
@@ -534,26 +537,26 @@ class InfoOverlay : public tsl::Gui {
                 fill_color = renderer->a({0xC0, 0xC0, 0x0, 0xFF}); // yellow
             else
                 fill_color = renderer->a({0xC0, 0x0, 0x0, 0xFF}); // red
-            if (fill_w > 0) renderer->drawRect(bx, bar_y, fill_w, BAR_H, fill_color);
+            if (fill_w > 0) renderer->drawRect(bx, bar_y, fill_w, kBarH, fill_color);
         }
 
         // Draw bar border (white outline)
-        renderer->drawRect(bx, bar_y, BAR_W, 1, renderer->a(0xFFFF));             // top
-        renderer->drawRect(bx, bar_y + BAR_H - 1, BAR_W, 1, renderer->a(0xFFFF)); // bottom
-        renderer->drawRect(bx, bar_y, 1, BAR_H, renderer->a(0xFFFF));             // left
-        renderer->drawRect(bx + BAR_W - 1, bar_y, 1, BAR_H, renderer->a(0xFFFF)); // right
+        renderer->drawRect(bx, bar_y, kBarW, 1, renderer->a(0xFFFF));             // top
+        renderer->drawRect(bx, bar_y + kBarH - 1, kBarW, 1, renderer->a(0xFFFF)); // bottom
+        renderer->drawRect(bx, bar_y, 1, kBarH, renderer->a(0xFFFF));             // left
+        renderer->drawRect(bx + kBarW - 1, bar_y, 1, kBarH, renderer->a(0xFFFF)); // right
 
         // Left: HP:current/max
         char hp_text[32];
         snprintf(hp_text, sizeof(hp_text), "HP:%d/%d", hp, max_hp);
-        renderer->drawString(hp_text, false, bx + 3, text_y, TEXT_FONT, renderer->a(0xFFFF));
+        renderer->drawString(hp_text, false, bx + 3, text_y, kTextFont, renderer->a(0xFFFF));
 
         // Right: percentage (right-aligned)
         char pct_text[16];
         float pct = (max_hp > 0) ? ((float)hp / (float)max_hp * 100.0f) : 0.0f;
         snprintf(pct_text, sizeof(pct_text), "%.1f%%", pct);
-        u16 pct_w = renderer->drawString(pct_text, false, 0, 0, TEXT_FONT, {0, 0, 0, 0}).first;
-        renderer->drawString(pct_text, false, bx + BAR_W - pct_w - 3, text_y, TEXT_FONT, renderer->a(0xFFFF));
+        u16 pct_w = renderer->drawString(pct_text, false, 0, 0, kTextFont, {0, 0, 0, 0}).first;
+        renderer->drawString(pct_text, false, bx + kBarW - pct_w - 3, text_y, kTextFont, renderer->a(0xFFFF));
     }
 
     // Called when this Gui gets loaded to create the UI
@@ -563,31 +566,31 @@ class InfoOverlay : public tsl::Gui {
         // If you need more information in the header or want to change it's look, use a HeaderOverlayFrame.
         auto frame = new tsl::elm::HeaderOverlayFrame("", "");
 
-        auto Status = new tsl::elm::CustomDrawer([this](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
-            if (mhgu_running) {
+        auto status = new tsl::elm::CustomDrawer([this](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
+            if (g_game_running) {
                 // Card anchor: top-left corner (bx, by)
                 // name baseline = by+20, bar top = by+23, total card height ~45px
-                const u16 CARD_Y = 665; // anchor y: name top, bar bottom lands at y=700 (near screen bottom)
-                if (largecount_ > 1) {
-                    drawMonsterCard(renderer, cache_[0].name ? cache_[0].name : "?", cache_[0].hp, cache_[0].max_hp, 15,
-                                    CARD_Y);
-                    drawMonsterCard(renderer, cache_[1].name ? cache_[1].name : "?", cache_[1].hp, cache_[1].max_hp,
-                                    235, CARD_Y);
-                } else if (largecount_ == 1) {
+                const u16 kCardY = 665; // anchor y: name top, bar bottom lands at y=700 (near screen bottom)
+                if (large_count_ > 1) {
+                    DrawMonsterCard(renderer, cache_[0].name ? cache_[0].name : "?", cache_[0].hp, cache_[0].max_hp, 15,
+                                    kCardY);
+                    DrawMonsterCard(renderer, cache_[1].name ? cache_[1].name : "?", cache_[1].hp, cache_[1].max_hp,
+                                    235, kCardY);
+                } else if (large_count_ == 1) {
                     MonsterCache* mc = cache_[0].mptr ? &cache_[0] : &cache_[1];
-                    drawMonsterCard(renderer, mc->name ? mc->name : "?", mc->hp, mc->max_hp, 15, CARD_Y);
+                    DrawMonsterCard(renderer, mc->name ? mc->name : "?", mc->hp, mc->max_hp, 15, kCardY);
                 } else {
-                    renderer->drawString(mname_lang ? "未发现大型怪物" : "NO LARGE MONSTERS", false, 15, 710, 20,
+                    renderer->drawString(g_name_lang ? "未发现大型怪物" : "NO LARGE MONSTERS", false, 15, 710, 20,
                                          renderer->a(0xFFFF));
                 }
             } else {
-                renderer->drawString(mname_lang ? "未检测到游戏" : "MHGU IS NOT RUNNING", false, 15, 710, 20,
+                renderer->drawString(g_name_lang ? "未检测到游戏" : "MHGU IS NOT RUNNING", false, 15, 710, 20,
                                      renderer->a(0xFFFF));
             }
         });
 
         // Add the list to the frame for it to be drawn
-        frame->setContent(Status);
+        frame->setContent(status);
 
         // Return the frame to have it become the top level element of this Gui
         return frame;
@@ -598,7 +601,7 @@ class InfoOverlay : public tsl::Gui {
         std::lock_guard<std::mutex> lock(g_cache_mutex);
         cache_[0] = m_cache[0];
         cache_[1] = m_cache[1];
-        largecount_ = largecount;
+        large_count_ = g_large_count;
     }
 
     // Called once every frame to handle inputs not handled by other UI elements
@@ -621,13 +624,13 @@ class MainMenu : public tsl::Gui {
     }
 
     virtual tsl::elm::Element* createUI() override {
-        auto rootFrame = new tsl::elm::OverlayFrame("MHGU-Monster-Info", APP_VERSION);
+        auto root_frame = new tsl::elm::OverlayFrame("MHGU-Monster-Info", APP_VERSION);
         auto list = new tsl::elm::List();
 
         auto en_info = new tsl::elm::ListItem("Info: English");
         en_info->setClickListener([](uint64_t keys) {
             if (keys & HidNpadButton_A) {
-                mname_lang = 0;
+                g_name_lang = 0;
                 tsl::swapTo<InfoOverlay>();
                 return true;
             }
@@ -638,7 +641,7 @@ class MainMenu : public tsl::Gui {
         auto zh_info = new tsl::elm::ListItem("Info: 简体中文");
         zh_info->setClickListener([](uint64_t keys) {
             if (keys & HidNpadButton_A) {
-                mname_lang = 1;
+                g_name_lang = 1;
                 tsl::swapTo<InfoOverlay>();
                 return true;
             }
@@ -652,15 +655,15 @@ class MainMenu : public tsl::Gui {
                       }),
                       100);
 
-        auto findp = new tsl::elm::ListItem("Find Pointer");
-        findp->setClickListener([](uint64_t keys) {
+        auto find_pointer = new tsl::elm::ListItem("Find Pointer");
+        find_pointer->setClickListener([](uint64_t keys) {
             if (keys & HidNpadButton_A) {
                 tsl::changeTo<FindOverlay>();
                 return true;
             }
             return false;
         });
-        list->addItem(findp);
+        list->addItem(find_pointer);
 
         list->addItem(new tsl::elm::CustomDrawer([](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
                           renderer->drawString("\uE016  Must Do Once On First Install.\n\n1. Make sure MHGU v1.4.0 is "
@@ -669,18 +672,18 @@ class MainMenu : public tsl::Gui {
                       }),
                       130);
 
-        rootFrame->setContent(list);
+        root_frame->setContent(list);
 
-        return rootFrame;
+        return root_frame;
     }
 
     virtual void update() override {
-        checkMHGURunning();
+        CheckMhguRunning();
         if (TeslaFPS != 60) {
             FullMode = true;
             tsl::hlp::requestForeground(true);
             TeslaFPS = 60;
-            refresh_interval = 1;
+            g_refresh_interval = 1;
         }
     }
 
@@ -698,8 +701,8 @@ class MonitorOverlay : public tsl::Overlay {
  public:
     // libtesla already initialized fs, hid, pl, pmdmnt, hid:sys and set:sys
     virtual void initServices() override {
-        Atmosphere_present = isServiceRunning("dmnt:cht");
-        if (Atmosphere_present == true) dmntchtInitialize();
+        g_atmosphere_present = IsServiceRunning("dmnt:cht");
+        if (g_atmosphere_present == true) dmntchtInitialize();
         pminfoInitialize();
         setInitialize();
     } // Called at the start to initialize all services necessary for this Overlay
@@ -708,7 +711,7 @@ class MonitorOverlay : public tsl::Overlay {
         dmntchtExit();
         pminfoExit();
         setExit();
-    } // Callet at the end to clean up all services previously initialized
+    } // Called at the end to clean up all services previously initialized
 
     virtual void onShow() override {
     } // Called before overlay wants to change from invisible to visible state
@@ -716,8 +719,8 @@ class MonitorOverlay : public tsl::Overlay {
     } // Called before overlay wants to change from visible to invisible state
 
     virtual std::unique_ptr<tsl::Gui> loadInitialGui() override {
-        t0.handle = 0;                // Initialize thread handle
-        return initially<MainMenu>(); // Initial Gui to load. It's possible to pass arguments to it's constructor like
+        g_thread.handle = 0;          // Initialize thread handle
+        return initially<MainMenu>(); // Initial Gui to load. It's possible to pass arguments to its constructor like
                                       // this
     }
 };

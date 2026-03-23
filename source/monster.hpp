@@ -221,9 +221,6 @@ static MonsterInfo database[] = {
   {0x5DA00C, "White F.", "祖龙", 0, 0, 0, 0, 0},
 };
 
-//static vars
-static MonsterCache m_cache[2]; //assume only 2 big monsters are active at a time
-
 inline u8 isSmallMonster(Monster* m)
 {
   return m->identifier2 == 0 || m->identifier2 == 0x80;
