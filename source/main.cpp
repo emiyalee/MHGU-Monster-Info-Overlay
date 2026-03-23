@@ -522,7 +522,7 @@ class InfoOverlay : public tsl::Gui {
         renderer->drawString(name, false, bx, name_y, kNameFont, renderer->a(0xFFFF));
 
         // Draw bar background (dark semi-transparent)
-        renderer->drawRect(bx, bar_y, kBarW, kBarH, renderer->a({0x2, 0x2, 0x2, 0xC0}));
+        renderer->drawRect(bx, bar_y, kBarW, kBarH, renderer->a({0x2, 0x2, 0x2, 0xC}));
 
         // Draw HP fill
         if (max_hp > 0) {
@@ -532,11 +532,11 @@ class InfoOverlay : public tsl::Gui {
             u16 fill_w = (u16)(kBarW * ratio);
             tsl::Color fill_color;
             if (ratio > 0.5f)
-                fill_color = renderer->a({0x0, 0xC0, 0x0, 0xFF}); // green
+                fill_color = renderer->a({0x0, 0xC, 0x0, 0xF}); // green
             else if (ratio > 0.25f)
-                fill_color = renderer->a({0xC0, 0xC0, 0x0, 0xFF}); // yellow
+                fill_color = renderer->a({0xC, 0xC, 0x0, 0xF}); // yellow
             else
-                fill_color = renderer->a({0xC0, 0x0, 0x0, 0xFF}); // red
+                fill_color = renderer->a({0xC, 0x0, 0x0, 0xF}); // red
             if (fill_w > 0) renderer->drawRect(bx, bar_y, fill_w, kBarH, fill_color);
         }
 
