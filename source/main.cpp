@@ -839,7 +839,7 @@ class MainMenu : public tsl::Gui {
 
     virtual void update() override {
         CheckMhguRunning();
-        if (g_game_running && !was_game_running_) {
+        if (g_game_running != was_game_running_) {
             tsl::swapTo<MainMenu>();
             return;
         }
