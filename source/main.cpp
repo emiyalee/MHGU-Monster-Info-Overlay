@@ -20,7 +20,6 @@
 // Common
 Thread g_thread;
 std::atomic<bool> g_thread_exit{false};
-uint64_t g_refresh_interval = 1;
 std::mutex g_cache_mutex;
 
 // MHGU
@@ -384,7 +383,7 @@ void GetMonsterInfo(void*) {
         }
 
         if (!g_monster_list_offset) {
-            svcSleepThread((s64)1'000'000'000 * 3 * g_refresh_interval);
+            svcSleepThread((s64)1'000'000'000 * 3);
             continue;
         }
 
@@ -392,7 +391,7 @@ void GetMonsterInfo(void*) {
         // so we don't need to constantly check the file anymore in the loop.
         UpdateMonsterCache();
         // interval
-        svcSleepThread(1'000'000'000 * g_refresh_interval);
+        svcSleepThread(1'000'000'000);
     }
 }
 
@@ -488,8 +487,6 @@ class InfoOverlay : public tsl::Gui {
 
         FullMode = false;
         deactivateOriginalFooter = true;
-
-        g_refresh_interval = 1;
 
         tsl::defaultBackgroundColor = tsl::style::color::ColorTransparent;
 
@@ -683,7 +680,6 @@ class MainMenu : public tsl::Gui {
             FullMode = true;
             tsl::hlp::requestForeground(true);
             TeslaFPS = 60;
-            g_refresh_interval = 1;
         }
     }
 
