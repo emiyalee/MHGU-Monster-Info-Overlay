@@ -9,6 +9,8 @@
 
 #include "monster.hpp"
 
+#include "ini_funcs.hpp"
+
 // #define MONSTER_POINTER_LIST_OFFSET 0x10C820AC
 #define MHGU_TITLE_ID 0x0100770008DD8000
 // Widen the search range to adapt to new system memory layouts ---
@@ -36,12 +38,60 @@ std::atomic<u8> g_found_pointer{0};
 //  Chinese 1, English 0
 u8 g_name_lang = 1;
 
+// Config file path
+static const std::string kConfigPath = "sdmc:/switch/.overlays/MHGU-Monster-Info-Overlay.ini";
+// Config section
+static const std::string kConfigSection = "Config";
+
+// Speed preset: 0=Slow, 1=Normal, 2=Fast
+// Slow:   FPS=1, interval=2000ms
+// Normal: FPS=1, interval=1000ms
+// Fast:   FPS=2, interval=500ms
+std::atomic<u8> g_speed_preset{1}; // default Normal
+std::atomic<u32> g_data_interval_ms{1000};
+std::atomic<u8> g_overlay_fps{1};
+
+static const char* kSpeedNames[] = {"Slow", "Normal", "Fast"};
+static const u8 kSpeedFps[] = {1, 1, 2};
+static const u32 kSpeedInterval[] = {2000, 1000, 500};
+
 std::atomic<u8> g_game_running{0};
 
 bool g_atmosphere_present = false;
 
 // static vars
 MonsterCache m_cache[2]; // assume only 2 big monsters are active at a time
+
+// Apply speed preset to FPS and interval globals
+static void ApplySpeedPreset(u8 preset) {
+    if (preset > 2) preset = 1;
+    g_speed_preset = preset;
+    g_overlay_fps = kSpeedFps[preset];
+    g_data_interval_ms = kSpeedInterval[preset];
+}
+
+// Load config from INI file, write defaults if missing
+void LoadConfig() {
+    std::string speed_val = ult::parseValueFromIniSection(kConfigPath, kConfigSection, "speed");
+    if (speed_val.empty()) {
+        ult::setIniFileValue(kConfigPath, kConfigSection, "speed", "Normal");
+        ApplySpeedPreset(1);
+    } else {
+        u8 preset = 1; // default Normal
+        if (speed_val == "Slow")
+            preset = 0;
+        else if (speed_val == "Normal")
+            preset = 1;
+        else if (speed_val == "Fast")
+            preset = 2;
+        ApplySpeedPreset(preset);
+    }
+}
+
+// Save a single config key
+void SaveConfigValue(const std::string& key, const std::string& value) {
+    ult::setIniFileValue(kConfigPath, kConfigSection, key, value);
+}
 
 // check if mhgu game is running
 void CheckMhguRunning() {
@@ -390,8 +440,8 @@ void GetMonsterInfo(void*) {
         // The global offset is now updated directly by FindListPointer,
         // so we don't need to constantly check the file anymore in the loop.
         UpdateMonsterCache();
-        // interval
-        svcSleepThread(1'000'000'000);
+        // interval (configurable)
+        svcSleepThread((s64)g_data_interval_ms * 1'000'000);
     }
 }
 
@@ -483,7 +533,7 @@ class InfoOverlay : public tsl::Gui {
 
         tsl::hlp::requestForeground(false);
 
-        TeslaFPS = 1;
+        TeslaFPS = g_overlay_fps;
 
         FullMode = false;
         deactivateOriginalFooter = true;
@@ -624,17 +674,6 @@ class MainMenu : public tsl::Gui {
         auto root_frame = new tsl::elm::OverlayFrame("MHGU-Monster-Info", APP_VERSION);
         auto list = new tsl::elm::List();
 
-        auto en_info = new tsl::elm::ListItem("Info: English");
-        en_info->setClickListener([](uint64_t keys) {
-            if (keys & HidNpadButton_A) {
-                g_name_lang = 0;
-                tsl::swapTo<InfoOverlay>();
-                return true;
-            }
-            return false;
-        });
-        list->addItem(en_info);
-
         auto zh_info = new tsl::elm::ListItem("Info: 简体中文");
         zh_info->setClickListener([](uint64_t keys) {
             if (keys & HidNpadButton_A) {
@@ -646,11 +685,31 @@ class MainMenu : public tsl::Gui {
         });
         list->addItem(zh_info);
 
+        auto en_info = new tsl::elm::ListItem("Info: English");
+        en_info->setClickListener([](uint64_t keys) {
+            if (keys & HidNpadButton_A) {
+                g_name_lang = 0;
+                tsl::swapTo<InfoOverlay>();
+                return true;
+            }
+            return false;
+        });
+        list->addItem(en_info);
+
         list->addItem(new tsl::elm::CustomDrawer([](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
                           renderer->drawString("\uE016  Hold Left Stick & Right Stick to go back here.", false, x + 10,
                                                y + 30, 15, renderer->a(0xFFFF));
                       }),
                       100);
+
+        // --- Speed preset trackbar (Slow / Normal / Fast) ---
+        auto speed_bar = new tsl::elm::NamedStepTrackBar("Refresh Rate", {"Slow", "Normal", "Fast"});
+        speed_bar->setProgress(g_speed_preset);
+        speed_bar->setValueChangedListener([](u8 val) {
+            ApplySpeedPreset(val);
+            SaveConfigValue("speed", kSpeedNames[val]);
+        });
+        list->addItem(speed_bar);
 
         auto find_pointer = new tsl::elm::ListItem("Find Pointer");
         find_pointer->setClickListener([](uint64_t keys) {
@@ -701,6 +760,7 @@ class MonitorOverlay : public tsl::Overlay {
         if (g_atmosphere_present == true) dmntchtInitialize();
         pminfoInitialize();
         setInitialize();
+        LoadConfig();
     } // Called at the start to initialize all services necessary for this Overlay
     virtual void exitServices() override {
         CloseThreads(); // Ensure background thread is stopped on exit
