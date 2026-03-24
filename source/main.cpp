@@ -57,6 +57,10 @@ static const u32 kSpeedInterval[] = {2000, 1000, 500};
 
 std::atomic<u8> g_game_running{0};
 
+// Card position offset (pixels from default position)
+std::atomic<s16> g_card_offset_x{0};
+std::atomic<s16> g_card_offset_y{0};
+
 bool g_atmosphere_present = false;
 
 // static vars
@@ -86,6 +90,12 @@ void LoadConfig() {
             preset = 2;
         ApplySpeedPreset(preset);
     }
+
+    // Load card position offset
+    std::string cx = ult::parseValueFromIniSection(kConfigPath, kConfigSection, "card_x");
+    if (!cx.empty()) g_card_offset_x = (s16)std::stoi(cx);
+    std::string cy = ult::parseValueFromIniSection(kConfigPath, kConfigSection, "card_y");
+    if (!cy.empty()) g_card_offset_y = (s16)std::stoi(cy);
 }
 
 // Save a single config key
@@ -511,8 +521,8 @@ class FindOverlay : public tsl::Gui {
     }
 
     // Called once every frame to handle inputs not handled by other UI elements
-    virtual bool handleInput(u64 keysDown, u64 keysHeld, touchPosition touchInput, JoystickPosition leftJoyStick,
-                             JoystickPosition rightJoyStick) override {
+    virtual bool handleInput(u64 keysDown, u64 keysHeld, const HidTouchState& touchPos,
+                             HidAnalogStickState leftJoyStick, HidAnalogStickState rightJoyStick) override {
         if (keysDown & HidNpadButton_B) {
             tsl::goBack();
             return true;
@@ -526,6 +536,12 @@ class MainMenu;
 class InfoOverlay : public tsl::Gui {
     MonsterCache cache_[2]{};
     u8 large_count_ = 0;
+
+    // Touch drag state
+    bool dragging_ = false;
+    s32 touch_prev_x_ = 0;
+    s32 touch_prev_y_ = 0;
+    bool touch_was_active_ = false;
 
  public:
     InfoOverlay() {
@@ -554,16 +570,16 @@ class InfoOverlay : public tsl::Gui {
 
     // Draw a single monster card (name + HP bar)
     // anchor: (bx, by) = top-left corner of the card
-    static void DrawMonsterCard(tsl::gfx::Renderer* renderer, const char* name, s32 hp, s32 max_hp, u16 bx, u16 by) {
+    static void DrawMonsterCard(tsl::gfx::Renderer* renderer, const char* name, s32 hp, s32 max_hp, s32 bx, s32 by) {
         const u16 kNameFont = 20;
         const u16 kNameBarGap = 3;
         const u16 kBarW = 210;
         const u16 kBarH = 22;
         const u16 kTextFont = 14;
 
-        const u16 name_y = by + kNameFont;      // drawString baseline
-        const u16 bar_y = name_y + kNameBarGap; // bar top
-        const u16 text_y = bar_y + kBarH - 5;   // text baseline inside bar
+        const s32 name_y = by + kNameFont;      // drawString baseline
+        const s32 bar_y = name_y + kNameBarGap; // bar top
+        const s32 text_y = bar_y + kBarH - 5;   // text baseline inside bar
 
         // Draw monster name
         renderer->drawString(name, false, bx, name_y, kNameFont, renderer->a(0xFFFF));
@@ -614,25 +630,25 @@ class InfoOverlay : public tsl::Gui {
         auto frame = new tsl::elm::HeaderOverlayFrame("", "");
 
         auto status = new tsl::elm::CustomDrawer([this](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
+            s16 ox = g_card_offset_x.load(std::memory_order_relaxed);
+            s16 oy = g_card_offset_y.load(std::memory_order_relaxed);
             if (g_game_running) {
-                // Card anchor: top-left corner (bx, by)
-                // name baseline = by+20, bar top = by+23, total card height ~45px
-                const u16 kCardY = 665; // anchor y: name top, bar bottom lands at y=700 (near screen bottom)
+                const s32 cardY = 665 + oy;
                 if (large_count_ > 1) {
-                    DrawMonsterCard(renderer, cache_[0].name ? cache_[0].name : "?", cache_[0].hp, cache_[0].max_hp, 15,
-                                    kCardY);
+                    DrawMonsterCard(renderer, cache_[0].name ? cache_[0].name : "?", cache_[0].hp, cache_[0].max_hp,
+                                    15 + ox, cardY);
                     DrawMonsterCard(renderer, cache_[1].name ? cache_[1].name : "?", cache_[1].hp, cache_[1].max_hp,
-                                    235, kCardY);
+                                    235 + ox, cardY);
                 } else if (large_count_ == 1) {
                     MonsterCache* mc = cache_[0].mptr ? &cache_[0] : &cache_[1];
-                    DrawMonsterCard(renderer, mc->name ? mc->name : "?", mc->hp, mc->max_hp, 15, kCardY);
+                    DrawMonsterCard(renderer, mc->name ? mc->name : "?", mc->hp, mc->max_hp, 15 + ox, cardY);
                 } else {
-                    renderer->drawString(g_name_lang ? "未发现大型怪物" : "NO LARGE MONSTERS", false, 15, 710, 20,
-                                         renderer->a(0xFFFF));
+                    renderer->drawString(g_name_lang ? "未发现大型怪物" : "NO LARGE MONSTERS", false, 15 + ox,
+                                         cardY + 45, 20, renderer->a(0xFFFF));
                 }
             } else {
-                renderer->drawString(g_name_lang ? "未检测到游戏" : "MHGU IS NOT RUNNING", false, 15, 710, 20,
-                                     renderer->a(0xFFFF));
+                renderer->drawString(g_name_lang ? "未检测到游戏" : "MHGU IS NOT RUNNING", false, 15 + ox,
+                                     665 + oy + 45, 20, renderer->a(0xFFFF));
             }
         });
 
@@ -645,6 +661,11 @@ class InfoOverlay : public tsl::Gui {
 
     // Called once every frame to update values
     virtual void update() override {
+        // Exit overlay entirely if game is closed
+        if (!g_game_running) {
+            tsl::Overlay::get()->close();
+            return;
+        }
         std::lock_guard<std::mutex> lock(g_cache_mutex);
         cache_[0] = m_cache[0];
         cache_[1] = m_cache[1];
@@ -652,26 +673,96 @@ class InfoOverlay : public tsl::Gui {
     }
 
     // Called once every frame to handle inputs not handled by other UI elements
-    virtual bool handleInput(u64 keysDown, u64 keysHeld, touchPosition touchInput, JoystickPosition leftJoyStick,
-                             JoystickPosition rightJoyStick) override {
+    virtual bool handleInput(u64 keysDown, u64 keysHeld, const HidTouchState& touchPos,
+                             HidAnalogStickState leftJoyStick, HidAnalogStickState rightJoyStick) override {
         if ((keysHeld & HidNpadButton_StickL) && (keysHeld & HidNpadButton_StickR)) {
-            // tsl::goBack();
+            if (dragging_) {
+                dragging_ = false;
+                TeslaFPS = g_overlay_fps;
+            }
             tsl::swapTo<MainMenu>();
             return true;
         }
+
+        // Touch drag logic
+        bool touch_active = (touchPos.x != 0 || touchPos.y != 0);
+
+        if (touch_active && !touch_was_active_) {
+            // Touch start: check if within card bounding box
+            s16 ox = g_card_offset_x.load(std::memory_order_relaxed);
+            s16 oy = g_card_offset_y.load(std::memory_order_relaxed);
+            const s32 kPad = 20;
+            const s32 kDefY = 665;
+            const s32 kCardH = 45;
+            // Card group bounds in framebuffer space
+            s32 left = 15 + ox - kPad;
+            s32 top = kDefY + oy - kPad;
+            s32 right = (large_count_ > 1 ? 445 : 225) + ox + kPad;
+            s32 bottom = kDefY + kCardH + oy + kPad;
+            // Convert touch coords to framebuffer space
+            s32 fb_x = (s32)touchPos.x - (s32)ult::layerEdge;
+            s32 fb_y = (s32)touchPos.y;
+            if (fb_x >= left && fb_x <= right && fb_y >= top && fb_y <= bottom) {
+                dragging_ = true;
+                touch_prev_x_ = touchPos.x;
+                touch_prev_y_ = touchPos.y;
+                TeslaFPS = 20;
+                touch_was_active_ = true;
+                return true;
+            }
+        } else if (touch_active && dragging_) {
+            // Touch move: update offset
+            s32 dx = (s32)touchPos.x - touch_prev_x_;
+            s32 dy = (s32)touchPos.y - touch_prev_y_;
+            s16 new_x = (s16)(g_card_offset_x.load(std::memory_order_relaxed) + dx);
+            s16 new_y = (s16)(g_card_offset_y.load(std::memory_order_relaxed) + dy);
+            // Clamp to screen bounds (conservative: always valid for 2 monsters)
+            if (new_x < -15) new_x = -15;
+            if (new_x > 3) new_x = 3;
+            if (new_y < -665) new_y = -665;
+            if (new_y > 10) new_y = 10;
+            g_card_offset_x.store(new_x, std::memory_order_relaxed);
+            g_card_offset_y.store(new_y, std::memory_order_relaxed);
+            touch_prev_x_ = touchPos.x;
+            touch_prev_y_ = touchPos.y;
+            touch_was_active_ = true;
+            return true;
+        } else if (!touch_active && dragging_) {
+            // Touch end: save position
+            dragging_ = false;
+            TeslaFPS = g_overlay_fps;
+            SaveConfigValue("card_x", std::to_string(g_card_offset_x.load()));
+            SaveConfigValue("card_y", std::to_string(g_card_offset_y.load()));
+        }
+
+        touch_was_active_ = touch_active;
         return false;
     }
 };
 
 // Main Menu
 class MainMenu : public tsl::Gui {
+    bool was_game_running_ = false;
+
  public:
     MainMenu() {
         lastMode = "";
+        CheckMhguRunning();
+        was_game_running_ = g_game_running;
     }
 
     virtual tsl::elm::Element* createUI() override {
         auto root_frame = new tsl::elm::OverlayFrame("MHGU-Monster-Info", APP_VERSION);
+
+        if (!g_game_running) {
+            auto status = new tsl::elm::CustomDrawer([](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
+                renderer->drawString("Please start MHGU first.", false, x + 40, y + 200, 20, renderer->a(0xFFFF));
+                renderer->drawString("请先启动 MHGU 游戏。", false, x + 40, y + 240, 20, renderer->a(0xFFFF));
+            });
+            root_frame->setContent(status);
+            return root_frame;
+        }
+
         auto list = new tsl::elm::List();
 
         auto zh_info = new tsl::elm::ListItem("Info: 简体中文");
@@ -703,13 +794,26 @@ class MainMenu : public tsl::Gui {
                       100);
 
         // --- Speed preset trackbar (Slow / Normal / Fast) ---
-        auto speed_bar = new tsl::elm::NamedStepTrackBar("Refresh Rate", {"Slow", "Normal", "Fast"});
+        auto speed_bar = new tsl::elm::NamedStepTrackBar("Card Refresh Rate", {"Slow", "Normal", "Fast"});
         speed_bar->setProgress(g_speed_preset);
         speed_bar->setValueChangedListener([](u8 val) {
             ApplySpeedPreset(val);
             SaveConfigValue("speed", kSpeedNames[val]);
         });
         list->addItem(speed_bar);
+
+        auto reset_pos = new tsl::elm::ListItem("Reset Card Position");
+        reset_pos->setClickListener([](uint64_t keys) {
+            if (keys & HidNpadButton_A) {
+                g_card_offset_x = 0;
+                g_card_offset_y = 0;
+                SaveConfigValue("card_x", "0");
+                SaveConfigValue("card_y", "0");
+                return true;
+            }
+            return false;
+        });
+        list->addItem(reset_pos);
 
         auto find_pointer = new tsl::elm::ListItem("Find Pointer");
         find_pointer->setClickListener([](uint64_t keys) {
@@ -735,6 +839,11 @@ class MainMenu : public tsl::Gui {
 
     virtual void update() override {
         CheckMhguRunning();
+        if (g_game_running && !was_game_running_) {
+            tsl::swapTo<MainMenu>();
+            return;
+        }
+        was_game_running_ = g_game_running;
         if (TeslaFPS != 60) {
             FullMode = true;
             tsl::hlp::requestForeground(true);
@@ -742,8 +851,8 @@ class MainMenu : public tsl::Gui {
         }
     }
 
-    virtual bool handleInput(u64 keysDown, u64 keysHeld, touchPosition touchInput, JoystickPosition leftJoyStick,
-                             JoystickPosition rightJoyStick) override {
+    virtual bool handleInput(u64 keysDown, u64 keysHeld, const HidTouchState& touchPos,
+                             HidAnalogStickState leftJoyStick, HidAnalogStickState rightJoyStick) override {
         if (keysDown & HidNpadButton_B) {
             tsl::goBack();
             return true;
