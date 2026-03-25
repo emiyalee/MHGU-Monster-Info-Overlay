@@ -39,7 +39,7 @@ std::atomic<u8> g_found_pointer{0};
 u8 g_name_lang = 1;
 
 // Config file path
-static const std::string kConfigPath = "sdmc:/switch/.overlays/MHGU-Monster-Info-Overlay.ini";
+static const std::string kConfigPath = "sdmc:/config/MHGU-Monster-Info-Overlay/config.ini";
 // Config section
 static const std::string kConfigSection = "Config";
 
@@ -594,12 +594,12 @@ class InfoOverlay : public tsl::Gui {
             if (ratio > 1.0f) ratio = 1.0f;
             u16 fill_w = (u16)(kBarW * ratio);
             tsl::Color fill_color;
-            if (ratio > 0.5f)
-                fill_color = renderer->a({0x0, 0xC, 0x0, 0xF}); // green
-            else if (ratio > 0.25f)
-                fill_color = renderer->a({0xC, 0xC, 0x0, 0xF}); // yellow
-            else
-                fill_color = renderer->a({0xC, 0x0, 0x0, 0xF}); // red
+            // if (ratio > 0.5f)
+            //     fill_color = renderer->a({0x0, 0xC, 0x0, 0xF}); // green
+            // else if (ratio > 0.25f)
+            //     fill_color = renderer->a({0xC, 0xC, 0x0, 0xF}); // yellow
+            // else
+            fill_color = renderer->a({0xC, 0x0, 0x0, 0xF}); // red
             if (fill_w > 0) renderer->drawRect(bx, bar_y, fill_w, kBarH, fill_color);
         }
 
@@ -740,6 +740,67 @@ class InfoOverlay : public tsl::Gui {
     }
 };
 
+// Config Menu (Settings sub-page)
+class ConfigMenu : public tsl::Gui {
+ public:
+    ConfigMenu() {
+    }
+
+    virtual tsl::elm::Element* createUI() override {
+        auto frame = new tsl::elm::OverlayFrame("Settings", APP_VERSION);
+
+        auto list = new tsl::elm::List();
+
+        // --- Speed preset trackbar (Slow / Normal / Fast) ---
+        auto speed_bar =
+            new tsl::elm::NamedStepTrackBar("\uE131", {"Slow", "Normal", "Fast"}, true, "Card Refresh Rate");
+        speed_bar->setProgress(g_speed_preset);
+        speed_bar->setValueChangedListener([](u8 val) {
+            ApplySpeedPreset(val);
+            SaveConfigValue("speed", kSpeedNames[val]);
+        });
+        list->addItem(speed_bar);
+
+        auto reset_pos = new tsl::elm::ListItem("Reset Card Position");
+        reset_pos->setClickListener([](uint64_t keys) {
+            if (keys & HidNpadButton_A) {
+                g_card_offset_x = 0;
+                g_card_offset_y = 0;
+                SaveConfigValue("card_x", "0");
+                SaveConfigValue("card_y", "0");
+                return true;
+            }
+            return false;
+        });
+        list->addItem(reset_pos);
+
+        auto find_pointer = new tsl::elm::ListItem("Find Pointer");
+        find_pointer->setClickListener([](uint64_t keys) {
+            if (keys & HidNpadButton_A) {
+                tsl::changeTo<FindOverlay>();
+                return true;
+            }
+            return false;
+        });
+        list->addItem(find_pointer);
+
+        frame->setContent(list);
+        return frame;
+    }
+
+    virtual void update() override {
+    }
+
+    virtual bool handleInput(u64 keysDown, u64 keysHeld, const HidTouchState& touchPos,
+                             HidAnalogStickState leftJoyStick, HidAnalogStickState rightJoyStick) override {
+        if (keysDown & HidNpadButton_B) {
+            tsl::goBack();
+            return true;
+        }
+        return false;
+    }
+};
+
 // Main Menu
 class MainMenu : public tsl::Gui {
     bool was_game_running_ = false;
@@ -793,44 +854,15 @@ class MainMenu : public tsl::Gui {
                       }),
                       100);
 
-        // --- Speed preset trackbar (Slow / Normal / Fast) ---
-        auto speed_bar = new tsl::elm::NamedStepTrackBar("Card Refresh Rate", {"Slow", "Normal", "Fast"});
-        speed_bar->setProgress(g_speed_preset);
-        speed_bar->setValueChangedListener([](u8 val) {
-            ApplySpeedPreset(val);
-            SaveConfigValue("speed", kSpeedNames[val]);
-        });
-        list->addItem(speed_bar);
-
-        auto reset_pos = new tsl::elm::ListItem("Reset Card Position");
-        reset_pos->setClickListener([](uint64_t keys) {
+        auto settings = new tsl::elm::ListItem("Settings");
+        settings->setClickListener([](uint64_t keys) {
             if (keys & HidNpadButton_A) {
-                g_card_offset_x = 0;
-                g_card_offset_y = 0;
-                SaveConfigValue("card_x", "0");
-                SaveConfigValue("card_y", "0");
+                tsl::changeTo<ConfigMenu>();
                 return true;
             }
             return false;
         });
-        list->addItem(reset_pos);
-
-        auto find_pointer = new tsl::elm::ListItem("Find Pointer");
-        find_pointer->setClickListener([](uint64_t keys) {
-            if (keys & HidNpadButton_A) {
-                tsl::changeTo<FindOverlay>();
-                return true;
-            }
-            return false;
-        });
-        list->addItem(find_pointer);
-
-        list->addItem(new tsl::elm::CustomDrawer([](tsl::gfx::Renderer* renderer, u16 x, u16 y, u16 w, u16 h) {
-                          renderer->drawString("\uE016  Must Do Once On First Install.\n\n1. Make sure MHGU v1.4.0 is "
-                                               "running.\n\n2. Start a quest with some monsters.\n\n3. Find Pointer.",
-                                               false, x + 10, y + 30, 15, renderer->a(0xFFFF));
-                      }),
-                      130);
+        list->addItem(settings);
 
         root_frame->setContent(list);
 
