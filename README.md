@@ -7,12 +7,19 @@ You need to have installed Ultra Hand to use it.
 You can exit from info page by pressing and holding Left Stick + Right Stick. To exit from main menu press B.
 
 # ScreenShots
-### Chinese
-Todo
-### English
-Todo
+### Main Menu
+![MainMenu](./resources/MainMenu.jpg)
 
-# Usage
+### Settings
+![Settings](./resources/Settings.jpg)
+
+### Chinese
+![Chinese](./resources/Chinese.jpg)
+
+### English
+![English](./resources/English.jpg)
+
+### Usage
 1. Setup UltraHand
 1. Download the latest MHGU-Monster-Info-Overlay.ovl
 1. Copy MHGU-Monster-Info-Overlay.ovl to be inside the /switch/.overlays directory on your switch's SD card
